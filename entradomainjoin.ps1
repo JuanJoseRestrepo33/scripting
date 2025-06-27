@@ -6,29 +6,59 @@ param(
 # --- Configuración de FSLogix (sin join al dominio) ---
 Write-Host "Iniciando configuración de FSLogix..."
 
+# Extraer información de la cuenta de almacenamiento desde la ruta
+$storageAccountName = "storagehmeastusdev01"
+$fileShareName = "fsl-pf-avd-01"
+
 # Desmontar si ya está montado
 if (Test-Path "$driveLetter\") {
     Write-Host "Desmontando unidad $driveLetter si existe..."
     net use $driveLetter /delete /y
 }
 
-# Montar el recurso compartido
-Write-Host "Montando recurso compartido: $sharePath en $driveLetter"
-net use $driveLetter $sharePath
-
-# Verificar que se montó correctamente
-if (Test-Path "$driveLetter\") {
-    Write-Host "Recurso compartido montado exitosamente"
-} else {
-    Write-Error "Error al montar el recurso compartido"
-    exit 1
+# Intentar obtener la clave de la cuenta de almacenamiento usando Azure CLI
+Write-Host "Obteniendo clave de la cuenta de almacenamiento..."
+try {
+    # Intentar usar Azure CLI si está disponible
+    $storageKey = az storage account keys list --account-name $storageAccountName --resource-group "avd-resources" --query "[0].value" -o tsv 2>$null
+    
+    if ($storageKey) {
+        Write-Host "Clave de almacenamiento obtenida exitosamente"
+        
+        # Montar con credenciales
+        Write-Host "Montando recurso compartido con autenticación..."
+        $netUseCommand = "net use $driveLetter $sharePath /user:Azure\$storageAccountName $storageKey"
+        Write-Host "Ejecutando: net use $driveLetter $sharePath /user:Azure\$storageAccountName [KEY_HIDDEN]"
+        
+        $result = cmd /c $netUseCommand 2>&1
+        Write-Host "Resultado: $result"
+        
+        if (Test-Path "$driveLetter\") {
+            Write-Host "✅ Recurso compartido montado exitosamente"
+            
+            # Permisos NTFS recomendados
+            Write-Host "Aplicando permisos NTFS..."
+            icacls $driveLetter /grant "NT AUTHORITY\Authenticated Users:(OI)(CI)(M)"
+            icacls $driveLetter /grant "CREATOR OWNER:(OI)(CI)(IO)(F)"
+            icacls $driveLetter /setowner "BUILTIN\Administrators"
+        } else {
+            Write-Warning "⚠️ No se pudo verificar el montaje, pero continuando..."
+        }
+    } else {
+        Write-Warning "⚠️ No se pudo obtener la clave de almacenamiento"
+        Write-Host "Intentando montaje sin autenticación..."
+        net use $driveLetter $sharePath
+    }
+} catch {
+    Write-Warning "⚠️ Error al obtener clave de almacenamiento: $($_.Exception.Message)"
+    Write-Host "Intentando montaje sin autenticación..."
+    try {
+        net use $driveLetter $sharePath
+    } catch {
+        Write-Warning "⚠️ No se pudo montar el recurso compartido: $($_.Exception.Message)"
+        Write-Host "FSLogix intentará montarlo automáticamente cuando sea necesario"
+    }
 }
-
-# Permisos NTFS recomendados
-Write-Host "Aplicando permisos NTFS..."
-icacls $driveLetter /grant "NT AUTHORITY\Authenticated Users:(OI)(CI)(M)"
-icacls $driveLetter /grant "CREATOR OWNER:(OI)(CI)(IO)(F)"
-icacls $driveLetter /setowner "BUILTIN\Administrators"
 
 # --- Configuración de FSLogix ---
 Write-Host "Configurando FSLogix..."
@@ -94,6 +124,14 @@ if ($vhdLocation) {
     Write-Host "✅ Ubicación VHD configurada: $($vhdLocation.VHDLocations)"
 } else {
     Write-Warning "⚠️ Ubicación VHD no configurada"
+}
+
+# Verificar si el recurso compartido está montado
+if (Test-Path "$driveLetter\") {
+    Write-Host "✅ Recurso compartido montado en $driveLetter"
+} else {
+    Write-Warning "⚠️ Recurso compartido no está montado en $driveLetter"
+    Write-Host "FSLogix intentará montarlo automáticamente cuando los usuarios inicien sesión"
 }
 
 Write-Host "🎉 ¡Configuración de FSLogix completada exitosamente!"
