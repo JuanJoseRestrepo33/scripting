@@ -1,39 +1,37 @@
 param(
-  [string]$domain,
-  [string]$domainUser,
-  [string]$domainPass
+  [string]$sharePath,
+  [string]$driveLetter
 )
 
-# --- 1. Unir la VM al dominio ---
-$securePass = ConvertTo-SecureString $domainPass -AsPlainText -Force
-$credential = New-Object System.Management.Automation.PSCredential($domainUser, $securePass)
-
-Add-Computer -DomainName $domain -Credential $credential -Force
-Write-Host "¡VM unida al dominio! Reiniciando en 10 segundos..."
-Start-Sleep -Seconds 10
-Restart-Computer
-return  # El script se detiene aquí hasta después del reinicio
-
-# --- 2. Montar el File Share y aplicar permisos NTFS ---
-# (Ejecuta esta parte después del reinicio y login como usuario de dominio)
-
-$sharePath = "\\storagehmeastusdev01.file.core.windows.net\fsl-pf-avd-01"
-$driveLetter = "Z:"
+# --- Solo configuración de FSLogix (sin join al dominio) ---
+Write-Host "Iniciando configuración de FSLogix..."
 
 # Desmontar si ya está montado
 if (Test-Path "$driveLetter\") {
+    Write-Host "Desmontando unidad $driveLetter si existe..."
     net use $driveLetter /delete /y
 }
 
 # Montar el recurso compartido
+Write-Host "Montando recurso compartido: $sharePath en $driveLetter"
 net use $driveLetter $sharePath
 
+# Verificar que se montó correctamente
+if (Test-Path "$driveLetter\") {
+    Write-Host "Recurso compartido montado exitosamente"
+} else {
+    Write-Error "Error al montar el recurso compartido"
+    exit 1
+}
+
 # Permisos NTFS recomendados
+Write-Host "Aplicando permisos NTFS..."
 icacls $driveLetter /grant "NT AUTHORITY\Authenticated Users:(OI)(CI)(M)"
 icacls $driveLetter /grant "CREATOR OWNER:(OI)(CI)(IO)(F)"
 icacls $driveLetter /setowner "BUILTIN\Administrators"
 
 # --- Configuración de FSLogix ---
+Write-Host "Configurando FSLogix..."
 $regPath = "HKLM:\SOFTWARE\FSLogix\Profiles"
 
 if (-not (Test-Path $regPath)) {
@@ -47,5 +45,4 @@ New-ItemProperty -Path $regPath -Name "VolumeType" -Value "VHDX" -PropertyType S
 New-ItemProperty -Path $regPath -Name "SizeInMBs" -Value 30000 -PropertyType DWord -Force
 New-ItemProperty -Path $regPath -Name "DeleteLocalProfileWhenVHDShouldApply" -Value 1 -PropertyType DWord -Force
 
-Write-Host "¡Configuración de FSLogix completada!"
-Write-Host "Por favor, cierra sesión e inicia sesión de nuevo con un usuario de prueba para verificar."
+Write-Host "¡Configuración de FSLogix completada exitosamente!"
